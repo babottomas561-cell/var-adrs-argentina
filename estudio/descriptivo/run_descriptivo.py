@@ -55,7 +55,7 @@ EVENTS = [
     ("2025-09-08", "5", "Elección bonaerense 2025", True),
     ("2025-10-27", "6", "Legislativas 2025", False),
 ]
-PERIODS = [("2007-04-27", "2015-12-09", "Fernández de Kirchner"), ("2015-12-10", "2019-12-09", "Macri"),
+PERIODS = [("2007-04-27", "2015-12-09", "Kirchner"), ("2015-12-10", "2019-12-09", "Macri"),
            ("2019-12-10", "2023-12-09", "Fernández"), ("2023-12-10", "2026-12-31", "Milei")]
 FREQ_EDGES = [-np.inf, -0.10, -0.05, -0.04, -0.03, -0.02, -0.01, 0, 0.01, 0.02, 0.03, 0.04, 0.05, 0.10, np.inf]
 SOURCE = "Fuente: Yahoo Finance, precios de cierre ajustados en USD, congelados en data/. Elaboración propia."
@@ -630,6 +630,345 @@ def fig_periods(per: pd.DataFrame) -> None:
     style.save(fig, FIG / "d13_por_periodo.png")
 
 
+# ============================================================================ ampliación: por activo, años, colas
+
+# Solo se etiquetan fechas con una causa clara y documentada; el resto queda sin etiqueta.
+EVENT_LABELS = {
+    "2008-09-19": "Plan de rescate de EE. UU. (TARP) y prohibición de ventas en corto",
+    "2008-10-09": "Crisis financiera global", "2008-10-10": "Crisis financiera global",
+    "2008-10-13": "Rebote global tras los rescates bancarios en Europa",
+    "2008-10-21": "Anuncio de la estatización de las AFJP", "2008-10-22": "Estatización de las AFJP (segundo día)",
+    "2008-11-20": "Crisis financiera global", "2009-03-05": "Crisis financiera global",
+    "2011-08-08": "Rebaja de la calificación de EE. UU. (S&P)",
+    "2012-04-18": "Semana de la expropiación de YPF (anuncio 16/04/2012)",
+    "2014-07-30": "Vence el plazo con los holdouts (default selectivo)",
+    "2015-10-26": "Primera vuelta presidencial 2015",
+    "2018-08-30": "Corrida cambiaria de agosto de 2018", "2018-08-31": "Rebote tras la corrida cambiaria",
+    "2019-08-12": "PASO 2019", "2019-08-19": "Semana posterior a las PASO (renuncia del ministro de Hacienda)",
+    "2020-03-09": "COVID-19 y guerra de precios del petróleo", "2020-03-10": "COVID-19 (rebote)",
+    "2020-03-12": "COVID-19", "2020-03-16": "COVID-19", "2020-03-18": "COVID-19",
+    "2020-03-19": "COVID-19 (rebote)", "2020-03-25": "COVID-19 (rebote)",
+    "2020-07-06": "Nueva oferta de reestructuración de la deuda",
+    "2023-11-20": "Balotaje 2023", "2023-11-24": "Semana posterior al balotaje",
+    "2025-09-08": "Elección bonaerense 2025", "2025-09-22": "Anuncio de apoyo del Tesoro de EE. UU.",
+    "2025-10-09": "Tesoro de EE. UU.: compra de pesos y swap", "2025-10-27": "Legislativas 2025",
+}
+MONTHS = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
+WEEKDAYS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
+
+
+def event_label(d: pd.Timestamp) -> str:
+    return EVENT_LABELS.get(f"{d:%Y-%m-%d}", "–")
+
+
+def extreme_days(x: pd.Series, spy: pd.Series, k: int, worst: bool) -> pd.DataFrame:
+    days = x.nsmallest(k) if worst else x.nlargest(k)
+    return pd.DataFrame({"Fecha": [f"{d:%d/%m/%Y}" for d in days.index], "Retorno": days.to_numpy(),
+                         "S&P 500 ese día": spy.reindex(days.index).to_numpy(),
+                         "Evento": [event_label(d) for d in days.index]}, index=range(1, k + 1))
+
+
+def drawdown_episodes(x: pd.Series, k: int = 5) -> pd.DataFrame:
+    """Episodios de caída desde un máximo previo hasta recuperarlo, ordenados por profundidad."""
+    eq = (1 + x).cumprod()
+    dd = eq / eq.cummax() - 1
+    ids = (dd == 0).cumsum()
+    rows = []
+    groups = list(dd.groupby(ids))
+    for g, (_, seg) in enumerate(groups):
+        if seg.min() >= 0:
+            continue
+        recovery = groups[g + 1][1].index[0] if g + 1 < len(groups) else None
+        rows.append({"Máximo previo": seg.index[0], "Mínimo": seg.idxmin(), "Caída": seg.min(),
+                     "Ruedas hasta el mínimo": dd.index.get_loc(seg.idxmin()) - dd.index.get_loc(seg.index[0]),
+                     "Recuperación": recovery,
+                     "Ruedas bajo el máximo": (dd.index.get_loc(recovery) if recovery is not None else len(dd))
+                     - dd.index.get_loc(seg.index[0])})
+    out = pd.DataFrame(rows).sort_values("Caída").head(k).reset_index(drop=True)
+    out.index += 1
+    return out
+
+
+def asset_profile(series: dict[str, pd.Series], tfits: dict[str, tuple]) -> pd.DataFrame:
+    spy = series["S&P 500 (SPY)"]
+    port = series["Cartera"]
+    rows = {}
+    for name in TICKERS + ["Cartera"]:
+        x = series[name]
+        dd = drawdown_episodes(x, 1).iloc[0]
+        both = pd.concat([x, spy], axis=1, join="inner")
+        rows[name] = {
+            "Sector": SECTOR.get(name, "Cartera"), "Ruedas": len(x),
+            "Retorno medio diario": x.mean(), "Desvío diario": x.std(),
+            "Volatilidad anual": x.std() * np.sqrt(TRADING_DAYS), "Crecimiento anual compuesto": cagr(x),
+            "Peor día": x.min(), "Fecha del peor día": f"{x.idxmin():%d/%m/%Y}",
+            "Mejor día": x.max(), "Fecha del mejor día": f"{x.idxmax():%d/%m/%Y}",
+            "Percentil 1": x.quantile(0.01), "Percentil 99": x.quantile(0.99),
+            "Asimetría": stats.skew(x), "Curtosis en exceso": stats.kurtosis(x), "ν de la t": tfits[name][0],
+            "Máxima caída": dd["Caída"], "Máximo previo a la caída": f"{dd['Máximo previo']:%d/%m/%Y}",
+            "Mínimo de la caída": f"{dd['Mínimo']:%d/%m/%Y}",
+            "Recuperó el máximo": "no" if pd.isna(dd["Recuperación"]) else f"{dd['Recuperación']:%d/%m/%Y}",
+            "Días sin cambio de precio": (x == 0).mean(),
+            "Correlación con la cartera": x.corr(port),
+            "Correlación con el S&P 500": both.iloc[:, 0].corr(both.iloc[:, 1]),
+            "Beta respecto del S&P 500": both.cov().iloc[0, 1] / both.iloc[:, 1].var(),
+        }
+    return pd.DataFrame(rows)
+
+
+def by_year(series: dict[str, pd.Series]) -> tuple[pd.DataFrame, pd.DataFrame]:
+    df = pd.DataFrame(series)
+    ret = df.apply(lambda x: (1 + x.dropna()).groupby(x.dropna().index.year).prod() - 1)
+    vol = df.apply(lambda x: x.dropna().groupby(x.dropna().index.year).std() * np.sqrt(TRADING_DAYS))
+    ret.index.name = vol.index.name = "Año"
+    return ret, vol
+
+
+def seasonality(port: pd.Series) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, float]]:
+    out = []
+    pvals = {}
+    for key, labels, name in [(port.index.month, MONTHS, "Mes"), (port.index.day_of_week, WEEKDAYS, "Día")]:
+        g = port.groupby(key)
+        t = pd.DataFrame({"Ruedas": g.size(), "Retorno medio diario": g.mean(), "Desvío diario": g.std()})
+        t["Error estándar"] = t["Desvío diario"] / np.sqrt(t["Ruedas"])
+        t["Positivos"] = g.apply(lambda v: (v > 0).mean())
+        t.index = [labels[i - 1] if name == "Mes" else labels[i] for i in t.index]
+        t.index.name = name
+        out.append(t)
+        pvals[name] = stats.kruskal(*[v.to_numpy() for _, v in g]).pvalue
+    return out[0], out[1], pvals
+
+
+def tail_dependence(rets: pd.DataFrame, q: float = 0.05, n_sim: int = 400_000) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Coexcedencias: P(activo j en su peor 5% | activo i en su peor 5%), observada y bajo una normal
+    multivariada con la misma matriz de correlación; y cuántos ADRs caen juntos en su cola cada día."""
+    x = rets[TICKERS]
+    hits = (x < x.quantile(q)).astype(float)
+    obs = (hits.T @ hits) / hits.sum().to_numpy()[:, None]
+    rng = np.random.default_rng(SEED)
+    sim = rng.multivariate_normal(np.zeros(len(TICKERS)), x.corr().to_numpy(), size=n_sim)
+    sh = (sim < np.quantile(sim, q, axis=0)).astype(float)
+    norm = pd.DataFrame((sh.T @ sh) / sh.sum(axis=0)[:, None], index=TICKERS, columns=TICKERS)
+    k = np.arange(len(TICKERS) + 1)
+    counts = hits.sum(axis=1).astype(int).value_counts().reindex(k, fill_value=0)
+    cnt = pd.DataFrame({"Días observados": counts.to_numpy(), "Frecuencia observada": counts.to_numpy() / len(x),
+                        "Normal con igual correlación": np.bincount(sh.sum(axis=1).astype(int), minlength=len(k)) / n_sim,
+                        "Activos independientes": stats.binom.pmf(k, len(TICKERS), q)}, index=k)
+    cnt.index.name = "ADRs en su peor 5% el mismo día"
+    return obs, norm, cnt
+
+
+def fig_asset(name: str, x: pd.Series, level: pd.Series, spy_level: pd.Series, tfit: tuple, prof: pd.Series,
+              path: Path) -> None:
+    color = style.INK if name == "Cartera" else SECTOR_COLORS[SECTOR[name]]
+    fig, axes = plt.subplots(2, 2, figsize=(14, 8.6))
+    ax = axes[0, 0]
+    ax.plot(spy_level / spy_level.dropna().iloc[0] * 100, color=style.BASELINE, lw=1.1, label="S&P 500")
+    ax.plot(level / level.iloc[0] * 100, color=color, lw=1.3, label=name)
+    ax.axhline(100, color=style.BASELINE, lw=0.8)
+    ax.set_yscale("log")
+    ax.yaxis.set_major_formatter(mtick.FuncFormatter(lambda v, _: f"{v:g}"))
+    ax.yaxis.set_minor_formatter(mtick.NullFormatter())
+    mark_events(ax)
+    ax.legend(loc="upper left", fontsize=9)
+    ax.set_title("Precio en base 100 (escala log)\n", fontsize=12)
+    ax = axes[0, 1]
+    eq = (1 + x).cumprod()
+    dd = eq / eq.cummax() - 1
+    ax.fill_between(dd.index, dd, 0, color=color, alpha=0.35, lw=0)
+    ax.plot(dd, color=color, lw=0.8)
+    mark_events(ax)
+    ax.yaxis.set_major_formatter(mtick.PercentFormatter(1, decimals=0))
+    ax.set_ylim(-1, 0.02)
+    ax.set_title("Caída desde el máximo previo (drawdown)\n", fontsize=12)
+    ax = axes[1, 0]
+    ax.plot(x, color=color, lw=0.45)
+    for qv in (x.quantile(0.01), x.quantile(0.99)):
+        ax.axhline(qv, color=style.INK_2, lw=0.9, ls="--")
+    ax.axhline(0, color=style.BASELINE, lw=0.8)
+    mark_events(ax, numbers=False)
+    ax.yaxis.set_major_formatter(mtick.PercentFormatter(1, decimals=0))
+    ax.set_title("Retornos diarios (líneas: percentiles 1 y 99)", fontsize=12)
+    ax = axes[1, 1]
+    bins = np.linspace(x.min() - 0.005, x.max() + 0.005, 90)
+    ax.hist(x, bins=bins, density=True, color=color, alpha=0.3, lw=0)
+    ax.hist(x, bins=bins, density=True, histtype="step", color=color, lw=1)
+    xs = np.linspace(bins[0], bins[-1], 800)
+    ax.plot(xs, stats.norm.pdf(xs, x.mean(), x.std()), color=style.ORANGE, lw=1.5, label="Normal")
+    ax.plot(xs, stats.t.pdf(xs, *tfit), color=style.INK, lw=1.2, ls="--", label=f"t (ν = {num(tfit[0], 1)})")
+    ax.set_yscale("log")
+    ax.set_ylim(1e-3, np.histogram(x, bins=bins, density=True)[0].max() * 3)
+    ax.xaxis.set_major_formatter(mtick.PercentFormatter(1, decimals=0))
+    ax.legend(loc="upper right", fontsize=9)
+    ax.set_title("Histograma con densidad en escala log: las colas", fontsize=12)
+    title = "Cartera equiponderada (8 ADRs)" if name == "Cartera" else f"{name} · {NAMES[name]} ({SECTOR[name]})"
+    header(fig, title,
+           f"Volatilidad anual {pct(prof['Volatilidad anual'], 0)} · crecimiento anual compuesto "
+           f"{pct(prof['Crecimiento anual compuesto'], 1)} · peor día {pct(prof['Peor día'], 1)} "
+           f"({prof['Fecha del peor día']}) · curtosis {num(prof['Curtosis en exceso'], 0)} · máxima caída "
+           f"{pct(prof['Máxima caída'], 0)}", top=0.88)
+    style.source(fig, SOURCE + " " + EVENTS_NOTE.replace("\n", " ").strip())
+    style.save(fig, path)
+
+
+def fig_annual(ret: pd.DataFrame) -> None:
+    cmap = plt.matplotlib.colors.LinearSegmentedColormap.from_list("div", style.DIVERGING)
+    norm = plt.matplotlib.colors.TwoSlopeNorm(vcenter=0, vmin=-1, vmax=1.5)
+    cols = [c.replace(" (SPY)", "") for c in ret.columns]
+    fig, ax = plt.subplots(figsize=(12, 10))
+    ax.imshow(ret.to_numpy(dtype=float), cmap=cmap, norm=norm, aspect="auto")
+    ax.set_xticks(range(len(cols)), cols)
+    ax.set_yticks(range(len(ret)), [f"{y}{'*' if y in (ret.index[0], ret.index[-1]) else ''}" for y in ret.index])
+    ax.grid(False)
+    ax.tick_params(length=0)
+    for sp in ax.spines.values():
+        sp.set_visible(False)
+    for i in range(ret.shape[0]):
+        for j in range(ret.shape[1]):
+            v = ret.iat[i, j]
+            ax.text(j, i, f"{v:+.0%}".replace("+", "+" if v > 0 else ""), ha="center", va="center", fontsize=8.5,
+                    color="white" if v < -0.45 or v > 0.9 else style.INK)
+    ax.axvline(len(TICKERS) - 0.5, color=style.SURFACE, lw=4)
+    ax.set_title("Retorno de cada año calendario, en USD", pad=26)
+    style.subtitle(ax, "Rojo: pérdida; azul: ganancia. Los años argentinos se mueven en bloque y casi nunca "
+                       "acompañan al S&P 500")
+    style.source(fig, SOURCE + " * Año incompleto (2007 desde el 27/04; 2026 hasta el 30/10).")
+    style.save(fig, FIG / "d14_retornos_anuales.png")
+
+
+def fig_drawdowns(series: dict[str, pd.Series]) -> None:
+    fig, axes = plt.subplots(1, 2, figsize=(15, 5.4), gridspec_kw={"width_ratios": [1.7, 1]})
+    ax = axes[0]
+    for name, c, lw in [("S&P 500 (SPY)", style.MUTED, 1.2), ("Cartera", style.INK, 1.3)]:
+        eq = (1 + series[name]).cumprod()
+        dd = eq / eq.cummax() - 1
+        ax.fill_between(dd.index, dd, 0, color=c, alpha=0.15, lw=0)
+        ax.plot(dd, color=c, lw=lw, label=name.replace(" (SPY)", ""))
+    mark_events(ax)
+    ax.yaxis.set_major_formatter(mtick.PercentFormatter(1, decimals=0))
+    ax.set_ylim(-1, 0.02)
+    ax.legend(loc="lower left")
+    ax.set_title("Caída desde el máximo previo\n", fontsize=12.5)
+    ax = axes[1]
+    mdd = pd.Series({n: max_drawdown(x) for n, x in series.items()}).sort_values(ascending=False)
+    colors = [SECTOR_COLORS[SECTOR[n]] if n in SECTOR else (style.INK if n == "Cartera" else style.MUTED)
+              for n in mdd.index]
+    bars = ax.barh([n.replace(" (SPY)", "") for n in mdd.index], mdd, color=colors, height=0.65)
+    for b, v in zip(bars, mdd):
+        ax.text(v, b.get_y() + b.get_height() / 2, f"{pct(v, 0)} ", va="center", ha="right", fontsize=9,
+                color=style.INK_2)
+    ax.set_xlim(-1.12, 0)
+    ax.grid(axis="y", visible=False)
+    ax.xaxis.set_major_formatter(mtick.PercentFormatter(1, decimals=0))
+    ax.set_title("Máxima caída de toda la muestra\n", fontsize=12.5)
+    header(fig, "Drawdowns: cuánto llegó a perder quien compró en el peor momento",
+           "La cartera pasó la mayor parte de la muestra lejos de su máximo; todos los ADRs perdieron más del 80% en "
+           "algún tramo.", top=0.86)
+    style.source(fig, SOURCE)
+    style.save(fig, FIG / "d15_drawdowns.png")
+
+
+def fig_rolling_corr(rets: pd.DataFrame, port: pd.Series) -> pd.Series:
+    from run import avg_pairwise_corr
+    avg = avg_pairwise_corr(rets[TICKERS], window=126)
+    spy_c = port.rolling(126).corr(rets["SPY"])
+    fig, ax = plt.subplots(figsize=(12, 5))
+    ax.plot(avg, color=style.BLUE, lw=1.3, label="Correlación promedio entre los 8 ADRs (126 ruedas)")
+    ax.plot(spy_c, color=style.MUTED, lw=1.2, label="Correlación de la cartera con el S&P 500 (126 ruedas)")
+    mark_events(ax)
+    ax.set_ylim(-0.1, 1)
+    ax.set_ylabel("Correlación de Pearson")
+    ax.legend(loc="lower left", fontsize=9.5)
+    ax.set_title("Correlaciones móviles de seis meses", pad=40)
+    style.subtitle(ax, f"Entre ADRs: de {num(avg.min(), 2)} a {num(avg.max(), 2)}, con saltos en los shocks locales. "
+                       "La correlación con el S&P 500 sube en crisis globales y se derrumba en las locales")
+    style.source(fig, SOURCE + " " + EVENTS_NOTE.replace("\n", " ").strip())
+    style.save(fig, FIG / "d16_correlacion_movil.png")
+    return avg
+
+
+def fig_seasonality(month: pd.DataFrame, wd: pd.DataFrame, pvals: dict[str, float]) -> None:
+    fig, axes = plt.subplots(1, 2, figsize=(15, 5), gridspec_kw={"width_ratios": [12, 5]})
+    for ax, t, key in [(axes[0], month, "Mes"), (axes[1], wd, "Día")]:
+        y = t["Retorno medio diario"]
+        ax.bar(t.index, y, color=[style.BLUE if v > 0 else style.RED for v in y], width=0.65, alpha=0.8)
+        ax.errorbar(t.index, y, yerr=1.96 * t["Error estándar"], fmt="none", ecolor=style.INK_2, lw=1, capsize=3)
+        ax.axhline(0, color=style.BASELINE, lw=0.8)
+        ax.yaxis.set_major_formatter(mtick.PercentFormatter(1, decimals=1))
+        ax.grid(axis="x", visible=False)
+        ax.set_title(f"Por {'mes' if key == 'Mes' else 'día de la semana'} · Kruskal-Wallis p = {num(pvals[key], 2)}",
+                     fontsize=12)
+    axes[0].set_ylabel("Retorno medio diario de la cartera")
+    both = pd.concat([month, wd])
+    sig = list(both.index[(both["Retorno medio diario"].abs() > 1.96 * both["Error estándar"])])
+    note = (f"Solo {', '.join(sig)} excluye el cero, algo esperable por azar entre {len(both)} comparaciones"
+            if sig else "Todos los intervalos incluyen el cero")
+    header(fig, "¿Hay estacionalidad? Retorno medio diario de la cartera por mes y por día",
+           f"Barras de error: intervalo de 95% para la media. {note}; el test conjunto no rechaza la igualdad: no hay "
+           "un calendario explotable.", top=0.84)
+    style.source(fig, SOURCE)
+    style.save(fig, FIG / "d17_estacionalidad.png")
+
+
+def fig_tail_dependence(obs: pd.DataFrame, norm: pd.DataFrame, cnt: pd.DataFrame) -> None:
+    cmap = plt.matplotlib.colors.LinearSegmentedColormap.from_list("seq", style.SEQUENTIAL)
+    fig, axes = plt.subplots(1, 2, figsize=(15, 6.2), gridspec_kw={"width_ratios": [1, 1.1]})
+    ax = axes[0]
+    v = obs.to_numpy().copy()
+    np.fill_diagonal(v, np.nan)
+    ax.imshow(v, cmap=cmap, vmin=0, vmax=0.8)
+    ax.set_xticks(range(len(TICKERS)), TICKERS, rotation=45, ha="right")
+    ax.set_yticks(range(len(TICKERS)), TICKERS)
+    ax.grid(False)
+    ax.tick_params(length=0)
+    for sp in ax.spines.values():
+        sp.set_visible(False)
+    for i in range(len(TICKERS)):
+        for j in range(len(TICKERS)):
+            if i != j:
+                ax.text(j, i, f"{obs.iat[i, j]:.0%}\n({norm.iat[i, j]:.0%})", ha="center", va="center", fontsize=8,
+                        color="white" if obs.iat[i, j] > 0.45 else style.INK)
+    ax.set_xlabel("... el activo de la columna también está en su peor 5%")
+    ax.set_ylabel("Si el activo de la fila está en su peor 5% ...")
+    ax.set_title("Probabilidad de caer juntos (entre paréntesis: normal)", fontsize=12)
+    ax = axes[1]
+    k = cnt.index.to_numpy()
+    ax.bar(k - 0.27, cnt["Frecuencia observada"], width=0.27, color=style.BLUE, label="Observada")
+    ax.bar(k, cnt["Normal con igual correlación"], width=0.27, color=style.ORANGE, label="Normal con igual correlación")
+    ax.bar(k + 0.27, cnt["Activos independientes"], width=0.27, color=style.MUTED, label="Activos independientes")
+    ax.set_yscale("log")
+    ax.set_ylim(1e-5, 1.5)
+    ax.yaxis.set_major_formatter(mtick.FuncFormatter(lambda v, _: f"{v * 100:g}%".replace(".", ",")))
+    ax.set_xticks(k)
+    ax.set_xlabel("Cantidad de ADRs en su peor 5% el mismo día")
+    ax.set_ylabel("Frecuencia relativa (escala log)")
+    ax.legend(loc="upper right", fontsize=9)
+    ax.set_title("¿Cuántos caen juntos?", fontsize=12)
+    n8 = int(cnt["Días observados"].iloc[-1])
+    header(fig, "Dependencia en las colas: en los días malos caen todos a la vez",
+           f"Los 8 ADRs estuvieron juntos en su peor 5% en {n8} días; una normal multivariada con la misma correlación "
+           f"predice {num(cnt['Normal con igual correlación'].iloc[-1] * cnt['Días observados'].sum(), 1)}.", top=0.86)
+    style.source(fig, SOURCE + " Normal: 400.000 simulaciones con la matriz de correlación muestral.")
+    style.save(fig, FIG / "d18_dependencia_colas.png")
+
+
+def fig_annual_vol(vol: pd.DataFrame) -> None:
+    fig, ax = plt.subplots(figsize=(13, 4.8))
+    y = np.arange(len(vol))
+    ax.bar(y - 0.2, vol["Cartera"], width=0.4, color=style.INK, label="Cartera")
+    ax.bar(y + 0.2, vol["S&P 500 (SPY)"], width=0.4, color=style.MUTED, label="S&P 500")
+    ax.set_xticks(y, vol.index)
+    ax.yaxis.set_major_formatter(mtick.PercentFormatter(1, decimals=0))
+    ax.grid(axis="x", visible=False)
+    ax.legend(loc="upper left")
+    ratio = (vol["Cartera"] / vol["S&P 500 (SPY)"])
+    ax.set_title("Volatilidad anualizada de cada año calendario", pad=26)
+    style.subtitle(ax, f"La cartera fue más volátil que el S&P 500 todos los años: entre {num(ratio.min(), 1)} y "
+                       f"{num(ratio.max(), 1)} veces")
+    style.source(fig, SOURCE)
+    style.save(fig, FIG / "d19_volatilidad_anual.png")
+
+
 # ============================================================================ main
 
 def md(df: pd.DataFrame, fmt: dict[str, callable], index: str = "") -> str:
@@ -639,6 +978,36 @@ def md(df: pd.DataFrame, fmt: dict[str, callable], index: str = "") -> str:
         if f is not None:
             out[c] = [f(v) for v in df[c]]
     out.index.name = index or df.index.name
+    return out.to_markdown(disable_numparse=True)
+
+
+FREQ_FMT = {"Frec. absoluta": lambda v: num(v, 0), "Frec. acumulada": lambda v: num(v, 0), "*": lambda v: pct(v, 2)}
+SEASON_FMT = {"Ruedas": lambda v: num(v, 0), "Positivos": lambda v: pct(v, 1), "*": lambda v: pct(v, 3)}
+EXTREME_FMT = {"Retorno": lambda v: pct(v, 1), "S&P 500 ese día": lambda v: pct(v, 1)}
+PROFILE_FMT = {"Ruedas": lambda v: num(v, 0), "Asimetría": lambda v: num(v, 2), "Curtosis en exceso": lambda v: num(v, 1),
+               "ν de la t": lambda v: num(v, 1), "Correlación con la cartera": lambda v: num(v, 2),
+               "Correlación con el S&P 500": lambda v: num(v, 2), "Beta respecto del S&P 500": lambda v: num(v, 2),
+               "Retorno medio diario": lambda v: pct(v, 3), "Desvío diario": lambda v: pct(v, 2),
+               "Percentil 1": lambda v: pct(v, 2), "Percentil 99": lambda v: pct(v, 2)}
+
+
+def md_profile(prof: pd.DataFrame) -> str:
+    out = prof.copy().astype(object)
+    for row in out.index:
+        f = PROFILE_FMT.get(row, lambda v: pct(v, 1))
+        out.loc[row] = [v if isinstance(v, str) else f(v) for v in prof.loc[row]]
+    out.index.name = "Indicador"
+    return out.to_markdown(disable_numparse=True)
+
+
+def md_episodes(ep: pd.DataFrame) -> str:
+    out = ep.copy().astype(object)
+    for c in ["Máximo previo", "Mínimo", "Recuperación"]:
+        out[c] = ["sin recuperar" if v is None or pd.isna(v) else f"{v:%d/%m/%Y}" for v in ep[c]]
+    out["Caída"] = [pct(v, 1) for v in ep["Caída"]]
+    for c in ["Ruedas hasta el mínimo", "Ruedas bajo el máximo"]:
+        out[c] = [num(v, 0) for v in ep[c]]
+    out.index.name = "#"
     return out.to_markdown(disable_numparse=True)
 
 
@@ -690,11 +1059,35 @@ def main() -> None:
     fig_var(fc)
     fig_periods(per)
 
+    prof = asset_profile(series, tfits)
+    levels = {**{t: prices[t] for t in TICKERS}, "Cartera": port_index}
+    for i, name in enumerate(TICKERS + ["Cartera"], 1):
+        fig_asset(name, series[name], levels[name], prices["SPY"], tfits[name], prof[name],
+                  FIG / "activos" / f"a{i:02d}_{name}.png")
+    ann_ret, ann_vol = by_year(series)
+    fig_annual(ann_ret)
+    fig_annual_vol(ann_vol)
+    fig_drawdowns(series)
+    fig_rolling_corr(rets, port)
+    month, wday, season_p = seasonality(port)
+    fig_seasonality(month, wday, season_p)
+    co_obs, co_norm, co_cnt = tail_dependence(rets)
+    fig_tail_dependence(co_obs, co_norm, co_cnt)
+    spy = series["S&P 500 (SPY)"]
+    worst10, best10 = extreme_days(port, spy, 10, True), extreme_days(port, spy, 10, False)
+    episodes = {n: drawdown_episodes(series[n], 5 if n == "Cartera" else 3) for n in TICKERS + ["Cartera"]}
+    freq_by = {n: frequency_table(series[n]) for n in TICKERS}
+
     for name, df in {"descriptiva_diaria": daily, "descriptiva_anual": annual, "frecuencias_cartera": freq,
                      "frecuencias_por_activo": freq_assets, "colas": tails, "por_periodo": per,
                      "sectores": sec, "correlaciones": corr, "estacionariedad": stat, "dependencia": dep,
                      "t_student": t_tbl, "var_estimado": vs, "excepciones_por_anio": exc,
-                     "volatilidad_ewma": vol_tbl}.items():
+                     "volatilidad_ewma": vol_tbl, "ficha_por_activo": prof, "retornos_anuales": ann_ret,
+                     "volatilidad_anual": ann_vol, "estacionalidad_mes": month, "estacionalidad_dia": wday,
+                     "coexcedencias_observadas": co_obs, "coexcedencias_normal": co_norm,
+                     "adrs_en_la_cola": co_cnt, "peores_dias_cartera": worst10, "mejores_dias_cartera": best10,
+                     **{f"caidas_{n}": e for n, e in episodes.items()},
+                     **{f"frecuencias_{n}": f for n, f in freq_by.items()}}.items():
         df.to_csv(TAB / f"{name}.csv")
 
     p2 = lambda v: pct(v, 2)  # noqa: E731
@@ -729,6 +1122,29 @@ def main() -> None:
             dep, {"Q(10) p": pval, "Q²(10) p": pval, "ARCH-LM p": pval, "ACF(1) retorno": lambda v: num(v, 3),
                   "ACF(1) retorno²": lambda v: num(v, 3), "ACF(1) valor abs.": lambda v: num(v, 3),
                   "*": lambda v: num(v, 1)}),
+        "## T15. Retorno de cada año calendario\n\n2007 y 2026 son años incompletos.\n\n" + md(
+            ann_ret, {"*": lambda v: pct(v, 0)}),
+        "## T16. Volatilidad anualizada de cada año calendario\n\n" + md(ann_vol, {"*": lambda v: pct(v, 0)}),
+        "## T17. Los cinco mayores episodios de caída de la cartera\n\n" + md_episodes(episodes["Cartera"]),
+        "## T18. Retorno de la cartera por mes\n\nKruskal-Wallis (H0: misma distribución en todos los meses): "
+        f"p = {num(season_p['Mes'], 3)}.\n\n" + md(month, SEASON_FMT),
+        "## T19. Retorno de la cartera por día de la semana\n\nKruskal-Wallis: "
+        f"p = {num(season_p['Día'], 3)}.\n\n" + md(wday, SEASON_FMT),
+        "## T20. Coexcedencias observadas: P(columna en su peor 5% | fila en su peor 5%)\n\n" + md(
+            co_obs, {"*": lambda v: pct(v, 0)}),
+        "## T21. Coexcedencias bajo una normal multivariada con la misma correlación\n\n" + md(
+            co_norm, {"*": lambda v: pct(v, 0)}),
+        "## T22. Cantidad de ADRs en su peor 5% el mismo día\n\n" + md(
+            co_cnt, {"Días observados": lambda v: num(v, 0), "*": lambda v: pct(v, 3)}),
+        "## T23. Los 10 peores días de la cartera\n\n" + md(worst10, EXTREME_FMT, index="#"),
+        "## T24. Los 10 mejores días de la cartera\n\n" + md(best10, EXTREME_FMT, index="#"),
+        "## T25. Ficha por activo\n\n" + md_profile(prof),
+        *[f"## A-{n}-frecuencias\n\n" + md(freq_by[n].set_index("Intervalo"), FREQ_FMT) for n in TICKERS],
+        *[f"## A-{n}-extremos\n\n**Peores 5 días**\n\n" + md(extreme_days(series[n], spy, 5, True), EXTREME_FMT,
+                                                               index="#")
+          + "\n\n**Mejores 5 días**\n\n" + md(extreme_days(series[n], spy, 5, False), EXTREME_FMT, index="#")
+          for n in TICKERS],
+        *[f"## A-{n}-caidas\n\n" + md_episodes(episodes[n]) for n in TICKERS],
     ]
     (HERE / "tablas.md").write_text("\n\n".join(sections) + "\n")
     print("\n\n".join(sections))

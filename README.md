@@ -43,6 +43,26 @@ Tres hechos de los datos que anticipan el resultado:
 
 ![Colas](estudio/figures/03_colas.png)
 
+### Análisis descriptivo completo
+
+El capítulo [**Análisis descriptivo de las variables**](estudio/descriptivo/ANALISIS_DESCRIPTIVO.md) mira los datos en detalle antes de evaluar los modelos. Incluye:
+- marco teórico y contexto macro de 2007 a 2026;
+- una ficha por variable y una sección por cada ADR;
+- 28 figuras y más de 40 tablas;
+- los tests previos al modelo econométrico.
+
+Lo central:
+
+- **Los días extremos son políticos y locales.** De los 10 peores días de la cartera, 4 son shocks puramente argentinos, con el S&P 500 casi quieto (PASO 2019: −47,1% contra −1,2%). De los 10 mejores, 9 son locales.
+- **Las colas son gruesas en las dos direcciones.** La asimetría de cada ADR es ≈ 0, y la t-Student ajustada tiene ν entre 3 y 4. Fuera de ±10% hubo 28 días, cuando la normal predice 0,9.
+- **Los ADRs caen juntos más de lo que permite la correlación.** Los 8 estuvieron a la vez en su peor 5% en 17 días; una normal con la misma correlación predice 2,9.
+- **El riesgo no se pagó.** La cartera creció 10,4% anual, igual que el S&P 500, con 2,2 veces su volatilidad, una caída máxima de −86% y 6,7 años bajo su máximo.
+- **Hacia el modelo.** Los precios son I(1) y los retornos, I(0). El test ARCH-LM rechaza en todas las series. El punto de partida propuesto es un GARCH(1,1) con innovaciones t.
+
+![Retornos anuales](estudio/descriptivo/figuras/d14_retornos_anuales.png)
+
+![Dependencia en las colas](estudio/descriptivo/figuras/d18_dependencia_colas.png)
+
 ## 3. Modelos
 
 Todos se re-estiman **cada día** usando solo las 500 ruedas anteriores. Nada del día pronosticado entra en el pronóstico.
@@ -142,6 +162,7 @@ Las conclusiones no dependen de la ventana (250 o 1.000 ruedas) ni de λ (0,97).
 uv sync
 uv run pytest
 uv run python estudio/run.py
+uv run python estudio/descriptivo/run_descriptivo.py
 ```
 
 `run.py` regenera las 10 figuras de `estudio/figures/` y las tablas de [`estudio/results.md`](estudio/results.md) en ~80 segundos. Los precios se descargan una vez y quedan congelados en `data/`, así que los números del informe no cambian si Yahoo revisa la historia.
@@ -152,6 +173,7 @@ src/quantkit/data.py     descarga y caché de precios
 estudio/models.py        pronósticos rodantes fuera de muestra
 estudio/run.py           análisis, figuras y tablas
 estudio/escenarios.py    escenarios de estrés hipotéticos
+estudio/descriptivo/     capítulo descriptivo: script, tablas y figuras
 tests/test_risk.py       cada modelo contra una respuesta teórica
 _archivo/                estudios exploratorios fuera de foco
 ```
