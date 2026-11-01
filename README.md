@@ -11,6 +11,7 @@
 - **Qué funciona.** Cuatro modelos aprueban los cuatro tests (frecuencia, independencia, cobertura condicional y el test Z2 del Expected Shortfall): **Monte Carlo t-Student con covarianza EWMA, simulación histórica filtrada, GARCH(1,1)-t y EVT filtrado**. Lo que tienen en común: **colas gruesas + volatilidad que reacciona**.
 - **Lo que ningún modelo ve.** Las PASO de 2019 (−47% la cartera en un día, 18 desvíos estándar). El mejor pronóstico de la noche anterior fue 14%. Para eso existen el ES y los escenarios de estrés, no el VaR.
 - **El ruido de Monte Carlo es lo de menos.** Con 5.000 simulaciones el error de simulación es ~4,5% del VaR; la diferencia entre modelos el mismo día es ~43%. Elegir bien el modelo importa 10 veces más que simular más.
+- **Antes de los modelos, los datos.** Los días extremos de la cartera son elecciones y decisiones de política, no crisis globales. Además, los 8 ADRs caen juntos 6 veces más seguido de lo que permite una normal. Ver el [análisis descriptivo](#análisis-descriptivo-de-los-datos).
 
 ## 1. Hipótesis
 
@@ -43,25 +44,157 @@ Tres hechos de los datos que anticipan el resultado:
 
 ![Colas](estudio/figures/03_colas.png)
 
-### Análisis descriptivo completo
+### Análisis descriptivo de los datos
 
-El capítulo [**Análisis descriptivo de las variables**](estudio/descriptivo/ANALISIS_DESCRIPTIVO.md) mira los datos en detalle antes de evaluar los modelos. Incluye:
-- marco teórico y contexto macro de 2007 a 2026;
-- una ficha por variable y una sección por cada ADR;
-- 28 figuras y más de 40 tablas;
-- los tests previos al modelo econométrico.
+> Resumen del capítulo [**Análisis descriptivo de las variables**](estudio/descriptivo/ANALISIS_DESCRIPTIVO.md). El capítulo tiene unas 1.500 líneas:
+> - marco teórico;
+> - contexto macro de 2007 a 2026;
+> - una ficha por variable;
+> - una sección por cada ADR;
+> - 28 figuras y 49 tablas.
+>
+> Se regenera con `uv run python estudio/descriptivo/run_descriptivo.py`.
 
-Lo central:
+#### Las variables
 
-- **Los días extremos son políticos y locales.** De los 10 peores días de la cartera, 4 son shocks puramente argentinos, con el S&P 500 casi quieto (PASO 2019: −47,1% contra −1,2%). De los 10 mejores, 9 son locales.
-- **Las colas son gruesas en las dos direcciones.** La asimetría de cada ADR es ≈ 0, y la t-Student ajustada tiene ν entre 3 y 4. Fuera de ±10% hubo 28 días, cuando la normal predice 0,9.
-- **Los ADRs caen juntos más de lo que permite la correlación.** Los 8 estuvieron a la vez en su peor 5% en 17 días; una normal con la misma correlación predice 2,9.
-- **El riesgo no se pagó.** La cartera creció 10,4% anual, igual que el S&P 500, con 2,2 veces su volatilidad, una caída máxima de −86% y 6,7 años bajo su máximo.
-- **Hacia el modelo.** Los precios son I(1) y los retornos, I(0). El test ARCH-LM rechaza en todas las series. El punto de partida propuesto es un GARCH(1,1) con innovaciones t.
+| Variable | Qué es | Por qué |
+|---|---|---|
+| Precio ajustado de cada ADR | Cierre diario en USD, ajustado por dividendos y splits | Variable primaria; en dólares y sin las distorsiones del cepo |
+| Retorno simple diario $r_t = P_t/P_{t-1} - 1$ | Variación diaria del precio | Solo el retorno simple se agrega entre activos. En logaritmos, el −47% de las PASO sería −64% |
+| Retorno de la cartera | Promedio de los 8 retornos, con rebalanceo diario | Es la variable objetivo: el VaR que se backtestea |
+| S&P 500 (SPY) | Mismo cálculo | Control: separa lo argentino de lo global |
+| Volatilidad EWMA (λ = 0,94) | Promedio exponencial de retornos al cuadrado | Es la pieza que hace reaccionar a los modelos |
+| VaR 99% y excepción | Pronóstico de cada modelo; 1 si la pérdida lo supera | Es la variable que se evalúa |
+
+#### Cómo evolucionaron los precios
+
+![Precios en base 100](estudio/descriptivo/figuras/d01_precios_base100.png)
+
+Ningún ADR tuvo una tendencia estable. Alternan subas de varias veces su valor con caídas de 80% a 95%. Hay tres resultados en 19 años, en dólares:
+
+| | Valor final (base 100) | Crecimiento anual | Volatilidad anual | Caída máxima |
+|---|---:|---:|---:|---:|
+| Cartera | 692 | 10,4% | 42,4% | −86,3% |
+| S&P 500 | 722 | 10,7% | 19,6% | −55,2% |
+| EDN | 89 | −0,6% | 63,7% | −95,5% |
+| CRESY | 89 | −0,6% | 48,6% | −89,4% |
+
+**El riesgo no se pagó.** La cartera terminó en el mismo lugar que el S&P 500, con 2,2 veces su volatilidad. Pasó 1.678 ruedas, unos 6,7 años, bajo su máximo de enero de 2018.
 
 ![Retornos anuales](estudio/descriptivo/figuras/d14_retornos_anuales.png)
 
+Los años argentinos se mueven en bloque y no siguen el ciclo global:
+
+| Año | Cartera | S&P 500 |
+|---|---:|---:|
+| 2019 | −38% | +31% |
+| 2022 | +62% | −18% |
+| 2024 | +164% | +25% |
+
+En 2024 los bancos subieron entre 278% y 316%.
+
+![Drawdowns](estudio/descriptivo/figuras/d15_drawdowns.png)
+
+#### La forma de la distribución
+
+![Histogramas con normal y t](estudio/descriptivo/figuras/d03_histogramas.png)
+
+| | GGAL | BMA | BBAR | YPF | TGS | EDN | TEO | CRESY | Cartera | SPY |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Desvío diario | 3,63% | 3,58% | 3,87% | 3,19% | 3,35% | 4,02% | 2,99% | 3,06% | 2,67% | 1,24% |
+| Peor día | −56,1% | −52,7% | −55,9% | −34,1% | −48,0% | −59,0% | −33,4% | −38,1% | −47,1% | −10,9% |
+| Mejor día | +38,7% | +37,6% | +40,8% | +39,9% | +36,8% | +36,9% | +37,5% | +39,8% | +34,9% | +14,5% |
+| Asimetría | −0,25 | −0,13 | 0,02 | 0,20 | −0,06 | 0,09 | 0,10 | 0,43 | −0,50 | 0,01 |
+| Curtosis en exceso | 18,3 | 15,7 | 16,0 | 18,5 | 14,8 | 15,3 | 14,2 | 17,7 | 30,4 | 14,6 |
+| ν de la t-Student | 3,9 | 3,8 | 3,7 | 3,1 | 4,0 | 3,0 | 3,8 | 3,6 | 3,5 | 2,5 |
+| Días a más de 5 desvíos | 14 | 11 | 11 | 9 | 9 | 14 | 9 | 9 | 12 | 19 |
+
+*Bajo una normal se esperarían 0,003 días a más de 5 desvíos.*
+
+- **Colas gruesas en las dos direcciones.** La asimetría de cada ADR es ≈ 0: hay días de −50% y también de +35%. La asimetría de la cartera (−0,50) viene de un solo día; sin las PASO es +0,68.
+- **La diversificación aumenta la curtosis.** La de la cartera (30) es mayor que la de cualquier ADR, porque en los días extremos todos se mueven juntos.
+- **La normal falla en el centro y en las colas.** El 41% de los días la cartera se mueve menos de ±1%; la normal predice 29%. Fuera de ±10% hubo 28 días, contra 0,9 esperados.
+
+#### Los días extremos son políticos
+
+| Peores días | Cartera | S&P 500 | | Mejores días | Cartera | S&P 500 |
+|---|---:|---:|---|---|---:|---:|
+| 12/08/2019 PASO | −47,1% | −1,2% | | 27/10/2025 Legislativas | +34,9% | +1,2% |
+| 08/09/2025 Elección bonaerense | −18,9% | +0,2% | | 20/11/2023 Balotaje | +23,5% | +0,8% |
+| 09/03/2020 COVID y petróleo | −17,2% | −7,8% | | 06/07/2020 Oferta de deuda | +18,9% | +1,5% |
+| 21/10/2008 Estatización AFJP | −17,1% | −3,0% | | 31/08/2018 Rebote post corrida | +16,5% | 0,0% |
+| 18/03/2020 COVID | −15,6% | −5,1% | | 22/09/2025 Apoyo del Tesoro de EE. UU. | +15,3% | +0,5% |
+
+Cuando el S&P 500 está casi quieto, el shock es argentino:
+- De los 10 peores días, 4 son locales puros y 4 son del COVID.
+- De los 10 mejores, 9 son locales.
+- Los 8 ADRs tuvieron su peor día el 12/08/2019.
+
+[Análisis por activo, con la empresa, sus días extremos y sus caídas →](estudio/descriptivo/ANALISIS_DESCRIPTIVO.md#210-análisis-por-activo)
+
+#### Los activos caen juntos
+
+![Correlación móvil](estudio/descriptivo/figuras/d16_correlacion_movil.png)
+
+La correlación promedio entre ADRs es 0,53. En ventanas de seis meses va de 0,18, entre 2009 y 2013, a 0,88, después de las PASO y de la elección bonaerense.
+
+La correlación con el S&P 500 se comporta al revés:
+- sube en las crisis globales;
+- se derrumba en las locales.
+
 ![Dependencia en las colas](estudio/descriptivo/figuras/d18_dependencia_colas.png)
+
+Una normal con la misma correlación subestima las caídas conjuntas:
+
+| | Observado | Normal con igual correlación |
+|---|---:|---:|
+| P(un ADR en su peor 5% \| otro lo está) | 37% | 27% |
+| Días con los 8 ADRs en su peor 5% | 17 | 2,9 |
+| Días con 5 o más ADRs en su peor 5% | 111 | 69 |
+
+Por eso el MC t-Student, que comparte un único shock de colas entre todos los activos, funciona mejor que el MC normal.
+
+Los bancos son 37,5% del capital y aportan **44,7% de la varianza**: en la práctica, la cartera equiponderada es una apuesta al sistema financiero.
+
+#### La volatilidad cambia y persiste
+
+![Volatilidad móvil](estudio/descriptivo/figuras/d10_volatilidad_movil.png)
+
+La volatilidad EWMA diaria de la cartera va de 0,9% a 11,8%. Su percentil 95 es casi 4 veces el percentil 5.
+
+Por período, la volatilidad anual creció en cada gobierno:
+
+| Período | Volatilidad anual |
+|---|---:|
+| 2007-2015 | 34,5% |
+| 2015-2019 | 42,6% |
+| 2019-2023 | 49,9% |
+| 2023-2026 | 51,2% |
+
+Desde 2018 no bajó de 37% en ningún año calendario.
+
+No hay estacionalidad en la media (Kruskal-Wallis: p = 0,41 por mes y 0,68 por día de la semana). Sí la hay en la volatilidad: los lunes y los meses de agosto y octubre son más volátiles, porque las elecciones son los domingos.
+
+#### Tests antes del modelo econométrico
+
+| Test | Resultado | Implicancia |
+|---|---|---|
+| ADF y KPSS | Log-precios I(1); retornos I(0) en todas las series | Modelar retornos, no precios |
+| Ljung-Box sobre $r$ | ACF(1) entre −0,05 y +0,03 en los ADRs | Media ≈ constante |
+| Ljung-Box sobre $r^2$ y ARCH-LM(10) | p < 0,001 en todas las series | Hace falta varianza condicional (GARCH) |
+| ACF de $\lvert r \rvert$ | Positiva hasta 40 rezagos | Volatilidad muy persistente |
+| t-Student ajustada | ν entre 3 y 4 | Innovaciones t, no normales |
+| Asimetría ≈ 0 | Saltos positivos tan grandes como los negativos | El efecto apalancamiento (GJR o EGARCH) probablemente sea débil |
+
+**Propuesta para el capítulo econométrico:** estimar un AR(0)-GARCH(1,1)-t y compararlo con GJR, EGARCH e IGARCH, con y sin el día de las PASO.
+
+**Ir al capítulo:**
+- [Marco teórico](estudio/descriptivo/ANALISIS_DESCRIPTIVO.md#22-marco-teórico-hechos-estilizados-y-herramientas)
+- [Contexto macro 2007-2026](estudio/descriptivo/ANALISIS_DESCRIPTIVO.md#23-contexto-macroeconómico-e-institucional-2007-2026)
+- [Ficha de cada variable](estudio/descriptivo/ANALISIS_DESCRIPTIVO.md#25-ficha-de-cada-variable)
+- [Análisis por activo](estudio/descriptivo/ANALISIS_DESCRIPTIVO.md#210-análisis-por-activo)
+- [Preparación para el modelo](estudio/descriptivo/ANALISIS_DESCRIPTIVO.md#215-preparación-para-el-modelo-econométrico)
+- [Conclusiones](estudio/descriptivo/ANALISIS_DESCRIPTIVO.md#216-conclusiones-del-capítulo)
 
 ## 3. Modelos
 
